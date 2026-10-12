@@ -74,4 +74,4 @@ Compose conserva los datos PostgreSQL en el volumen `postgres_data`. No elimines
 
 PostgreSQL contiene cuentas, tickets, solicitudes, cambios de estado y sesiones. Las migraciones iniciales crean las tablas e índices al arrancar. No publiques `DATABASE_URL`, `SESSION_SECRET` ni la contraseña temporal del administrador. Cualquier restauración debe probarse en un entorno separado antes de aplicarse a producción.
  al final hice una prueba de git desktop
- 
+ Clone de github desktop
