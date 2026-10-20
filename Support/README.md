@@ -1,6 +1,6 @@
 # Nexo TI
 
-**Conectamos soluciones.** Nexo TI es el portal interno de soporte para Bormine, Didiamant y Corpdiam. La aplicación utiliza Node.js, PostgreSQL y sesiones protegidas por cookie. Está preparada para ejecutarse como contenedor en EasyPanel.
+**Conectamos soluciones.** Nexo TI es el portal interno de soporte para Bormine, Didiamant y Corpdiam. La aplicación utiliza Node.js, PostgreSQL y sesiones protegidas por cookie. Está preparada para operar en una red corporativa y prioriza seguridad básica desde el arranque.
 
 ## Funciones implementadas
 
@@ -17,11 +17,11 @@
 
 ### 1. Preparar PostgreSQL
 
-Crea una base de datos PostgreSQL en EasyPanel y guarda el usuario, contraseña, nombre de la base, host y puerto. Mantén el volumen persistente activado y establece un plan de respaldos; el volumen por sí solo no sustituye una copia de seguridad.
+Crea una base de datos PostgreSQL en EasyPanel y guarda el usuario, contraseña, nombre de la base, host y puerto. Mantén el volumen persistente activado y establece un plan de respaldos; el volumen es imprescindible para conservar datos entre reinicios.
 
 ### 2. Crear el servicio de aplicación
 
-Conecta este repositorio como servicio de aplicación, selecciona el constructor **Dockerfile** y deja que EasyPanel construya el archivo `Dockerfile` de la raíz. Asigna el dominio y configura el destino interno al puerto **3000**. Habilita HTTPS.
+Conecta este repositorio como servicio de aplicación, selecciona el constructor **Dockerfile** y deja que EasyPanel construya el archivo `Dockerfile` de la raíz. Asigna el dominio y configura el despliegue automático según tu flujo.
 
 Agrega estas variables al servicio:
 
@@ -44,11 +44,46 @@ Antes del primer despliegue en una base vacía, define temporalmente:
 - `BOOTSTRAP_ADMIN_EMAIL`
 - `BOOTSTRAP_ADMIN_PASSWORD` (16 caracteres o más, aleatoria y exclusiva)
 
-La aplicación crea esa cuenta únicamente cuando todavía no hay usuarios. Después de confirmar el inicio de sesión, elimina esas tres variables del servicio y reinicia. Las cuentas posteriores se crean desde **Usuarios**. Comparte sus contraseñas iniciales por un canal seguro.
+La aplicación crea esa cuenta únicamente cuando todavía no hay usuarios. Después de confirmar el inicio de sesión, elimina esas tres variables del servicio y reinicia. Las cuentas posteriores se crean desde el panel de administración.
+
+### Solución rápida de errores en EasyPanel
+
+Si en los logs aparece repetidamente:
+
+> `La base de datos está vacía. Configura BOOTSTRAP_ADMIN_NAME, BOOTSTRAP_ADMIN_EMAIL y BOOTSTRAP_ADMIN_PASSWORD (mínimo 16 caracteres) para crear la cuenta inicial.`
+
+revisa lo siguiente:
+
+1. `BOOTSTRAP_ADMIN_PASSWORD` debe tener **16 caracteres o más**.
+   - Ejemplo válido: `Corpdiam_2026_Admin!x9`
+2. `APP_ORIGIN` debe ser el origen exacto **sin `/` al final**.
+   - Correcto: `https://next-ti.corpdiam.com`
+   - Incorrecto: `https://next-ti.corpdiam.com/`
+3. Guarda variables y ejecuta **Implementar** (redeploy completo).
+4. Inicia sesión con el admin inicial.
+5. Elimina `BOOTSTRAP_ADMIN_NAME`, `BOOTSTRAP_ADMIN_EMAIL` y `BOOTSTRAP_ADMIN_PASSWORD` del servicio.
+6. Vuelve a implementar.
+
+### Checklist mínimo de variables
+
+- `NODE_ENV=production`
+- `PORT=3000`
+- `APP_ORIGIN=https://tu-dominio.com` (sin slash final)
+- `APP_TIMEZONE=America/Mexico_City`
+- `DATABASE_URL=postgresql://USUARIO:CONTRASENA@HOST:PUERTO/BASE`
+- `SESSION_SECRET=<secreto aleatorio de al menos 32 caracteres>`
+- (solo primer arranque con DB vacía)
+  - `BOOTSTRAP_ADMIN_NAME`
+  - `BOOTSTRAP_ADMIN_EMAIL`
+  - `BOOTSTRAP_ADMIN_PASSWORD` (16+)
+
+### Nota sobre DATABASE_URL
+
+Si tu contraseña de PostgreSQL tiene caracteres especiales (`@`, `:`, `/`, `?`, `#`, `%`), codifícalos en URL para evitar errores de conexión.
 
 ### 4. Validar
 
-Comprueba `https://tu-dominio/api/health`; debe responder `{"status":"ok"}`. Después, inicia sesión, crea un ticket y una solicitud de cita, vuelve a desplegar el contenedor y confirma que los datos permanecen. En EasyPanel, verifica asimismo el estado saludable del contenedor, la conexión a PostgreSQL, el HTTPS y la política de respaldo/restauración.
+Comprueba `https://tu-dominio/api/health`; debe responder `{"status":"ok"}`. Después, inicia sesión, crea un ticket y una solicitud de cita, vuelve a desplegar el contenedor y confirma que los datos siguen presentes.
 
 ## Prueba local con Docker Compose
 
@@ -72,6 +107,4 @@ Compose conserva los datos PostgreSQL en el volumen `postgres_data`. No elimines
 
 ## Datos y seguridad operacional
 
-PostgreSQL contiene cuentas, tickets, solicitudes, cambios de estado y sesiones. Las migraciones iniciales crean las tablas e índices al arrancar. No publiques `DATABASE_URL`, `SESSION_SECRET` ni la contraseña temporal del administrador. Cualquier restauración debe probarse en un entorno separado antes de aplicarse a producción.
- al final hice una prueba de git desktop
- Clone de github desktop
+PostgreSQL contiene cuentas, tickets, solicitudes, cambios de estado y sesiones. Las migraciones iniciales crean las tablas e índices al arrancar. No publiques `DATABASE_URL`, `SESSION_SECRET` ni la contraseña de bootstrap en capturas, tickets o canales compartidos. Usa TLS en el dominio público, rota secretos al menos cada trimestre y conserva respaldos verificados con restauraciones de prueba.
