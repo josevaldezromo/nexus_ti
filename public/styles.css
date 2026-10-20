@@ -238,3 +238,24 @@
 :root[data-theme="dark"] .ticket-detail-modal textarea{background:#222431;color:#ececf4;border-color:#414354}
 :root[data-theme="dark"] .ticket-detail-modal input[type=file]{color:#a4a6b7}
 @media(max-width:600px){.pagination-controls{gap:8px;font-size:10px}.ticket-detail-summary{grid-template-columns:1fr}.ticket-detail-modal .form-row{grid-template-columns:1fr}}
+
+.settings-panel{padding-bottom:18px}
+.settings-form{padding:4px 18px 8px;max-width:760px}
+.settings-form label{display:grid;gap:6px;font-size:9px;font-weight:700;color:#5a5b6f;margin-bottom:13px}
+.settings-form input:not([type=checkbox]),.settings-form select{width:100%;border:1px solid #e7e7ef;border-radius:6px;padding:9px 10px;outline:none;color:#4f5062;background:#fff;font-size:10px;font-weight:400}
+.settings-form input:focus,.settings-form select:focus{border-color:#a89ded;box-shadow:0 0 0 3px #7664df14}
+.settings-form input[readonly]{background:#fafafd;color:#77798c}
+.settings-form .copy-row{display:flex;gap:8px;align-items:center}
+.settings-form .check-row{display:flex;align-items:center;gap:8px;font-weight:400}
+.settings-form .check-row input{width:14px;height:14px;margin:0;accent-color:var(--purple)}
+.settings-actions{display:flex;flex-wrap:wrap;gap:8px;padding-top:4px}
+.button-danger{color:#b8554d}
+.button-danger:hover{border-color:#e4a8a2;color:#b8554d}
+.setup-steps{margin:12px 18px 0;padding:14px 16px 14px 32px;background:#fafafd;border:1px solid #efeff4;border-radius:8px;font-size:10px;line-height:1.7;color:#696a7d;max-width:728px}
+.calendar-state{font-size:8px;display:block;margin-top:3px}.calendar-state.ok{color:#55a177}.calendar-state.error{color:#c8766e}
+:root[data-theme="dark"] .settings-form label{color:#c9cade}
+:root[data-theme="dark"] .settings-form input:not([type=checkbox]),:root[data-theme="dark"] .settings-form select{background:#222431;color:#ececf4;border-color:#414354}
+:root[data-theme="dark"] .settings-form input[readonly]{background:#1b1d28;color:#a4a6b7}
+:root[data-theme="dark"] .setup-steps{background:#222431;border-color:#353747;color:#b5b7c8}
+:root[data-theme="dark"] .button-danger{color:#e59a93}
+@media(max-width:600px){.settings-form{padding:4px 12px}.setup-steps{margin:12px 12px 0}}

@@ -6,7 +6,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --no-audit --no-fund && npm cache clean --force
 
-COPY --chown=node:node server.js ./
+COPY --chown=node:node server.js calendar.js ./
 COPY test/ ./test/
 RUN npm test && rm -rf test
 COPY --chown=node:node public/ ./public/

@@ -334,7 +334,7 @@ function showApplication() {
     users = [];
     document.querySelector("#users-table").replaceChildren();
     document.querySelector("#users-empty").classList.add("hidden");
-    if (document.querySelector("#view-usuarios").classList.contains("active")) setView("inicio");
+    if (document.querySelector("#view-usuarios").classList.contains("active") || document.querySelector("#view-configuracion").classList.contains("active")) setView("inicio");
   }
   document.querySelector("#profile-name").textContent = currentUser.name;
   document.querySelector("#profile-role").textContent = currentUser.role === "admin"
@@ -635,12 +635,119 @@ function render() {
 }
 
 function setView(name) {
-  const viewName = name === "usuarios" && currentUser.role !== "admin" ? "inicio" : name;
+  const viewName = ["usuarios", "configuracion"].includes(name) && currentUser.role !== "admin" ? "inicio" : name;
   document.querySelectorAll(".view").forEach((view) => view.classList.toggle("active", view.id === `view-${viewName}`));
   document.querySelectorAll(".nav-link").forEach((link) => link.classList.toggle("active", link.dataset.view === viewName));
   document.querySelector(".top-new-ticket").classList.toggle("hidden", viewName === "tickets");
-  const labels = { inicio: "Resumen", tickets: "Tickets", agenda: "Agenda", recursos: "Guías y soluciones", analisis: "Análisis", usuarios: "Usuarios" };
+  const labels = { inicio: "Resumen", tickets: "Tickets", agenda: "Agenda", recursos: "Guías y soluciones", analisis: "Análisis", usuarios: "Usuarios", configuracion: "Configuración" };
   document.querySelector("#breadcrumb-current").textContent = labels[viewName] || "Resumen";
+  if (viewName === "configuracion") loadCalendarSettings();
+}
+
+const calendarForm = document.querySelector("#calendar-form");
+
+function showCalendarError(message) {
+  const box = document.querySelector("#calendar-error");
+  box.textContent = message || "";
+  box.classList.toggle("hidden", !message);
+}
+
+function renderCalendarSettings(settings) {
+  const status = document.querySelector("#calendar-status");
+  status.textContent = !settings.connected ? "Sin conectar" : settings.enabled ? `Sincronizando · ${settings.connectedEmail || "cuenta conectada"}` : `Conectado · sincronización desactivada`;
+  document.querySelector("#calendar-key-warning").classList.toggle("hidden", settings.encryptionAvailable);
+  document.querySelector("#calendar-redirect").value = settings.redirectUri || "";
+  calendarForm.clientId.value = settings.clientId || "";
+  calendarForm.clientSecret.value = "";
+  calendarForm.calendarId.value = settings.calendarId || "primary";
+  calendarForm.eventMinutes.value = String(settings.eventMinutes || 60);
+  calendarForm.enabled.checked = Boolean(settings.enabled);
+  document.querySelector("#calendar-secret-hint").textContent = settings.hasClientSecret
+    ? "Hay un secreto guardado (cifrado). Déjalo vacío para conservarlo."
+    : "Se guarda cifrado y no se vuelve a mostrar.";
+  document.querySelector("#calendar-timezone-hint").textContent = settings.timeZone ? `Zona horaria: ${settings.timeZone}` : "";
+  document.querySelector("#calendar-connect").textContent = settings.connected ? "Reconectar con Google" : "Conectar con Google";
+  document.querySelector("#calendar-test").disabled = !settings.connected;
+  document.querySelector("#calendar-sync").disabled = !settings.connected || !settings.enabled;
+  document.querySelector("#calendar-sync").textContent = settings.pendingSync ? `Sincronizar pendientes (${settings.pendingSync})` : "Sincronizar pendientes";
+  document.querySelector("#calendar-disconnect").disabled = !settings.connected;
+  showCalendarError(settings.lastError);
+}
+
+async function loadCalendarSettings() {
+  try {
+    renderCalendarSettings((await request("/api/settings/calendar")).settings);
+  } catch (error) {
+    showCalendarError(error.message);
+  }
+}
+
+async function calendarAction(button, task) {
+  button.disabled = true;
+  try {
+    await task();
+  } catch (error) {
+    showCalendarError(error.message);
+    notify(error.message);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+calendarForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  calendarAction(document.querySelector("#calendar-save"), async () => {
+    const body = {
+      clientId: calendarForm.clientId.value.trim(),
+      calendarId: calendarForm.calendarId.value.trim() || "primary",
+      eventMinutes: Number(calendarForm.eventMinutes.value),
+      enabled: calendarForm.enabled.checked,
+    };
+    if (calendarForm.clientSecret.value) body.clientSecret = calendarForm.clientSecret.value;
+    renderCalendarSettings((await request("/api/settings/calendar", { method: "PUT", body: JSON.stringify(body) })).settings);
+    notify("Configuración guardada.");
+  }).finally(() => loadCalendarSettings());
+});
+
+document.querySelector("#calendar-copy").addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText(document.querySelector("#calendar-redirect").value);
+    notify("URI copiada.");
+  } catch {
+    document.querySelector("#calendar-redirect").select();
+  }
+});
+
+document.querySelector("#calendar-connect").addEventListener("click", (event) => calendarAction(event.currentTarget, async () => {
+  const { url } = await request("/api/settings/calendar/connect", { method: "POST", body: "{}" });
+  window.location.assign(url);
+}));
+
+document.querySelector("#calendar-test").addEventListener("click", (event) => calendarAction(event.currentTarget, async () => {
+  await request("/api/settings/calendar/test", { method: "POST", body: "{}" });
+  showCalendarError("");
+  notify("Conexión con Google Calendar correcta.");
+}).finally(() => loadCalendarSettings()));
+
+document.querySelector("#calendar-sync").addEventListener("click", (event) => calendarAction(event.currentTarget, async () => {
+  const { result } = await request("/api/settings/calendar/sync", { method: "POST", body: "{}" });
+  notify(`Sincronización terminada: ${result.synced} enviadas, ${result.removed} eliminadas, ${result.failed} con error.`);
+  await loadData();
+}));
+
+document.querySelector("#calendar-disconnect").addEventListener("click", (event) => calendarAction(event.currentTarget, async () => {
+  if (!window.confirm("¿Desconectar Google Calendar? Se detendrá la sincronización.")) return;
+  renderCalendarSettings((await request("/api/settings/calendar/disconnect", { method: "POST", body: "{}" })).settings);
+  notify("Google Calendar desconectado.");
+}));
+
+function handleCalendarReturn() {
+  const outcome = new URLSearchParams(window.location.search).get("calendar");
+  if (!outcome) return;
+  window.history.replaceState(null, "", window.location.pathname);
+  if (currentUser?.role !== "admin") return;
+  setView("configuracion");
+  notify(outcome === "connected" ? "Google Calendar conectado." : "No se pudo conectar Google Calendar. Revisa el detalle en Configuración.");
 }
 
 function openDialog(selector) {
@@ -736,6 +843,7 @@ async function initialize() {
     await loadNotifications();
     showApplication();
     connectLiveUpdates();
+    handleCalendarReturn();
   } catch (error) {
     if (error.message.startsWith("No se pudo conectar")) {
       showLogin("El servidor no está disponible. Recarga esta página en unos momentos.");

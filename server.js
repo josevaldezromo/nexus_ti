@@ -10,6 +10,12 @@ const bcrypt = require("bcryptjs");
 const helmet = require("helmet");
 const { rateLimit } = require("express-rate-limit");
 const { Pool } = require("pg");
+const {
+  CalendarError,
+  CALLBACK_PATH,
+  createCalendarService,
+  validateCalendarSettings,
+} = require("./calendar");
 
 const COMPANIES = new Set(["Bormine", "Didiamant", "Corpdiam"]);
 const CATEGORIES = new Set(["Odoo", "Accesos", "Equipo", "Red", "Correo", "Otro"]);
@@ -157,8 +163,23 @@ function asyncRoute(handler) {
   return (req, res, next) => Promise.resolve(handler(req, res, next)).catch(next);
 }
 
-function createApp({ pool, sessionSecret, appOrigin, events = new EventEmitter(), sessionStore }) {
+function createApp({
+  pool,
+  sessionSecret,
+  appOrigin,
+  events = new EventEmitter(),
+  sessionStore,
+  configEncryptionKey = process.env.CONFIG_ENCRYPTION_KEY,
+  calendarFetch,
+}) {
   const app = express();
+  const calendar = createCalendarService({
+    pool,
+    appOrigin,
+    timeZone: process.env.APP_TIMEZONE || "UTC",
+    encryptionKey: configEncryptionKey,
+    fetchImpl: calendarFetch,
+  });
   const PgSessionStore = connectPgSimple(session);
   const production = process.env.NODE_ENV === "production";
   const jsonBodyParser = express.json({ limit: "3mb", strict: true });
@@ -272,6 +293,31 @@ function createApp({ pool, sessionSecret, appOrigin, events = new EventEmitter()
     });
   }));
 
+  const calendarCallbackLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    limit: 30,
+    standardHeaders: "draft-8",
+    legacyHeaders: false,
+    message: { error: "Demasiados intentos. Espera unos minutos e inténtalo de nuevo." },
+  });
+  // La cookie de sesión es SameSite=Strict y no viaja en el regreso desde Google; la validez
+  // se comprueba con el state de un solo uso guardado en la base de datos.
+  app.get(CALLBACK_PATH, calendarCallbackLimiter, asyncRoute(async (req, res) => {
+    let outcome = "connected";
+    try {
+      if (req.query.error) throw new CalendarError("Google canceló la autorización o la cuenta no la concedió.");
+      await calendar.completeAuthorization({ code: req.query.code, state: req.query.state });
+    } catch (error) {
+      outcome = "error";
+      if (!(error instanceof CalendarError)) console.error("Error al completar la autorización de Google:", error);
+      await calendar.recordConnectionError(error instanceof CalendarError ? error.message : "No se pudo completar la autorización de Google.").catch(() => {});
+    }
+    const target = `/?calendar=${outcome}`;
+    return res.status(200).set("Cache-Control", "no-store").type("html").send(
+      `<!doctype html><html lang="es"><head><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=${target}"><title>Nexo TI</title></head><body><p>Redirigiendo a Nexo TI… <a href="${target}">Continuar</a></p></body></html>`,
+    );
+  }));
+
   app.use("/api", asyncRoute(async (req, res, next) => {
     if (["POST", "PATCH", "PUT", "DELETE"].includes(req.method) && req.get("origin") !== appOrigin) {
       return res.status(403).json({ error: "Origen de solicitud no permitido." });
@@ -318,6 +364,46 @@ function createApp({ pool, sessionSecret, appOrigin, events = new EventEmitter()
     if (req.user?.role !== "admin") return res.status(403).json({ error: "Esta acción requiere permisos de administrador." });
     return next();
   };
+
+  const calendarRoute = (handler) => asyncRoute(async (req, res) => {
+    try {
+      await handler(req, res);
+    } catch (error) {
+      if (error instanceof CalendarError) return res.status(error.status).json({ error: error.message });
+      throw error;
+    }
+  });
+
+  app.get("/api/settings/calendar", requireAdmin, calendarRoute(async (_req, res) => {
+    res.json({ settings: await calendar.getPublicSettings() });
+  }));
+
+  app.put("/api/settings/calendar", requireAdmin, calendarRoute(async (req, res) => {
+    const input = validateCalendarSettings(req.body);
+    if (!input) return res.status(400).json({ error: "Revisa los datos: el calendario no puede tener espacios y la duración debe estar entre 15 y 480 minutos." });
+    await calendar.saveSettings(input, req.user.id);
+    return res.json({ settings: await calendar.getPublicSettings() });
+  }));
+
+  app.post("/api/settings/calendar/connect", requireAdmin, calendarRoute(async (req, res) => {
+    res.json({ url: await calendar.createAuthorizationUrl(req.user.id) });
+  }));
+
+  app.post("/api/settings/calendar/test", requireAdmin, calendarRoute(async (_req, res) => {
+    await calendar.testConnection();
+    res.json({ ok: true });
+  }));
+
+  app.post("/api/settings/calendar/disconnect", requireAdmin, calendarRoute(async (req, res) => {
+    await calendar.disconnect(req.user.id);
+    res.json({ settings: await calendar.getPublicSettings() });
+  }));
+
+  app.post("/api/settings/calendar/sync", requireAdmin, calendarRoute(async (_req, res) => {
+    const result = await calendar.syncPending();
+    publishChange("appointments");
+    res.json({ result });
+  }));
 
   app.get("/api/auth/me", asyncRoute(async (req, res) => {
     if (!req.session.userId) return res.status(401).json({ error: "No hay una sesión activa." });
@@ -914,7 +1000,7 @@ function createApp({ pool, sessionSecret, appOrigin, events = new EventEmitter()
       const count = await pool.query(`SELECT COUNT(*)::int AS total FROM appointments${scope}`, values);
       const rows = await pool.query(
         `SELECT id, requester, email, subject, company, topic, appointment_date AS date,
-          appointment_time AS time, notes, status
+          appointment_time AS time, notes, status, (google_event_id IS NOT NULL) AS calendar_synced, calendar_error
          FROM appointments${scope}
          ORDER BY appointment_date, appointment_time, id
          LIMIT $${values.length + 1} OFFSET $${values.length + 2}`,
@@ -922,7 +1008,9 @@ function createApp({ pool, sessionSecret, appOrigin, events = new EventEmitter()
       );
       const total = count.rows[0].total;
       return res.json({
-        appointments: rows.rows,
+        appointments: rows.rows.map(({ calendar_error: calendarError, ...item }) => (
+          req.user.role === "admin" ? { ...item, calendar_error: calendarError } : item
+        )),
         total,
         page: pagination.page,
         limit: pagination.limit,
@@ -1024,9 +1112,16 @@ function createApp({ pool, sessionSecret, appOrigin, events = new EventEmitter()
     } finally {
       client.release();
     }
+    let calendarOutcome = "disabled";
+    try {
+      calendarOutcome = await calendar.syncAppointment(appointment.id);
+    } catch (error) {
+      console.error("No se pudo sincronizar la cita con Google Calendar:", error);
+      calendarOutcome = "error";
+    }
     publishChange("appointments");
     if (statusChanged) publishChange("notifications");
-    return res.json({ appointment: { id: appointment.id, status: appointment.status } });
+    return res.json({ appointment: { id: appointment.id, status: appointment.status }, calendar: calendarOutcome });
   }));
 
   app.get("/api/users", requireAdmin, asyncRoute(async (_req, res) => {
@@ -1406,6 +1501,30 @@ async function migrate(pool) {
     ALTER TABLE resources ADD COLUMN IF NOT EXISTS image_data BYTEA;
     ALTER TABLE resources ADD COLUMN IF NOT EXISTS image_mime_type VARCHAR(20);
     CREATE INDEX IF NOT EXISTS resources_active_company_idx ON resources (active, company, category);
+    CREATE TABLE IF NOT EXISTS calendar_settings (
+      id SMALLINT PRIMARY KEY CHECK (id = 1),
+      client_id VARCHAR(255) NOT NULL DEFAULT '',
+      client_secret_enc TEXT,
+      refresh_token_enc TEXT,
+      calendar_id VARCHAR(255) NOT NULL DEFAULT 'primary',
+      event_minutes INTEGER NOT NULL DEFAULT 60 CHECK (event_minutes BETWEEN 15 AND 480),
+      enabled BOOLEAN NOT NULL DEFAULT FALSE,
+      connected_email VARCHAR(320),
+      connected_at TIMESTAMPTZ,
+      last_error VARCHAR(500),
+      updated_by BIGINT REFERENCES users(id),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    INSERT INTO calendar_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+    CREATE TABLE IF NOT EXISTS calendar_oauth_states (
+      state_hash CHAR(64) PRIMARY KEY,
+      code_verifier VARCHAR(128) NOT NULL,
+      user_id BIGINT NOT NULL REFERENCES users(id),
+      expires_at TIMESTAMPTZ NOT NULL
+    );
+    ALTER TABLE appointments ADD COLUMN IF NOT EXISTS google_event_id VARCHAR(255);
+    ALTER TABLE appointments ADD COLUMN IF NOT EXISTS calendar_synced_at TIMESTAMPTZ;
+    ALTER TABLE appointments ADD COLUMN IF NOT EXISTS calendar_error VARCHAR(300);
   `);
 }
 
@@ -1451,6 +1570,10 @@ async function main() {
   if (process.env.NODE_ENV === "production" && origin.protocol !== "https:") {
     throw new Error("APP_ORIGIN debe usar HTTPS en producción.");
   }
+  const configEncryptionKey = process.env.CONFIG_ENCRYPTION_KEY;
+  if (configEncryptionKey && configEncryptionKey.length < 32) {
+    throw new Error("CONFIG_ENCRYPTION_KEY debe contener al menos 32 caracteres aleatorios.");
+  }
   const pool = new Pool({
     connectionString: databaseUrl,
     max: Number(process.env.DB_POOL_MAX || 10),
@@ -1464,7 +1587,7 @@ async function main() {
     await bootstrapAdmin(pool);
     const activeAdmin = await pool.query("SELECT EXISTS (SELECT 1 FROM users WHERE role = 'admin' AND active = TRUE) AS has_admin");
     if (!activeAdmin.rows[0].has_admin) throw new Error("No hay un administrador activo. Recupera el acceso antes de iniciar la aplicación.");
-    const app = createApp({ pool, sessionSecret, appOrigin: origin.origin });
+    const app = createApp({ pool, sessionSecret, appOrigin: origin.origin, configEncryptionKey });
     const port = parsePort(process.env.PORT);
     const server = app.listen(port, "0.0.0.0", () => console.info(`Nexo TI listo en el puerto ${port}.`));
     const shutdown = (signal) => {

@@ -21,7 +21,7 @@
 - Guías y soluciones: catálogo filtrable de enlaces a Google Drive; los administradores pueden crear, editar y archivar recursos, con imágenes de portada opcionales.
 - Datos y sesiones en PostgreSQL, no en el almacenamiento del navegador.
 - Validación en el servidor, contraseñas con bcrypt, sesiones con cookies `HttpOnly` y `SameSite=Strict`, token CSRF, verificación del origen, limitación de intentos de inicio de sesión y cabeceras de seguridad.
-- Las solicitudes de agenda quedan pendientes hasta que TI confirme o cancele; no bloquean espacios ni crean eventos en Google Calendar.
+- Las solicitudes de agenda quedan pendientes hasta que TI confirme o cancele; no bloquean espacios. Si se activa la sincronización (ver *Google Calendar*), las citas confirmadas se crean como eventos y se eliminan al cancelarlas o volverlas a pendiente.
 - Interfaz adaptable a escritorio, tablet y móvil: navegación inferior táctil en pantallas pequeñas, tablas desplazables horizontalmente y formularios que se ajustan al ancho disponible.
 - Modo oscuro opcional con preferencia guardada localmente por navegador; no cambia los datos ni la configuración de otros usuarios.
 
@@ -32,6 +32,16 @@ Desde **Guías y soluciones**, un administrador puede agregar y editar título, 
 Los comentarios del ticket son visibles tanto para el solicitante como para TI. No incluyas contraseñas, tokens ni otra información que no deba compartirse con el solicitante. Los adjuntos también quedan disponibles para los usuarios que ya tienen acceso al ticket.
 
 Compartir mediante enlace significa que cualquier persona que obtenga la URL podría abrir el archivo, según los permisos que se hayan configurado en Drive. No publiques contenido sensible ni contraseñas. Confirma los permisos del archivo antes de agregarlo; Nexo TI no valida quién puede abrir el recurso ni almacena el archivo de Drive, solo la imagen de portada opcional.
+
+### Google Calendar (panel Configuración)
+
+Los administradores ven la sección **Configuración**, donde se capturan Client ID, Client Secret, ID del calendario y duración de los eventos, y se conecta la cuenta con OAuth (PKCE).
+
+1. Define `CONFIG_ENCRYPTION_KEY` (mínimo 32 caracteres aleatorios) como variable de entorno **en tiempo de ejecución**. Con ella se cifran (AES-256-GCM) el secreto y el refresh token en PostgreSQL. Si la cambias, hay que volver a capturar las credenciales.
+2. En Google Cloud habilita la API de Google Calendar, configura la pantalla de consentimiento y crea un ID de cliente OAuth de tipo *Aplicación web* con la URI de redirección que muestra el panel (`APP_ORIGIN/api/settings/calendar/oauth/callback`).
+3. En el panel guarda las credenciales, pulsa **Conectar con Google**, prueba la conexión y activa la sincronización. **Sincronizar pendientes** envía las citas confirmadas anteriores.
+
+Los errores de Google se muestran en el panel y no impiden cambiar el estado de las citas.
 
 ## Despliegue en EasyPanel
 
@@ -84,7 +94,7 @@ Compose conserva los datos PostgreSQL en el volumen `postgres_data`. No elimines
 ## Límites conocidos y siguientes mejoras
 
 - La agenda permite cambiar entre **Pendiente**, **Confirmada** y **Cancelada**. Hace falta implementar disponibilidad, prevención de conflictos y sincronización con Google Calendar.
-- La integración con Google Calendar requiere credenciales OAuth autorizadas para el calendario compartido; no se conecta todavía.
+- Google Calendar sincroniza solo en un sentido (Nexo TI → Google); no invita a los solicitantes y, si el servidor se cae justo entre crear el evento y guardarlo, puede quedar un evento duplicado que se corrige borrándolo a mano.
 - No se envían correos electrónicos. Los avisos siguen disponibles dentro del portal.
 - Los tiempos de SLA son horas corridas, no descuentan horarios no laborables y no tienen umbrales de cumplimiento; además, los tiempos de primera respuesta solo se pueden medir desde que se habilita esta versión, porque los comentarios históricos no existían.
 - El resumen, los indicadores y el análisis se calculan en el servidor con `GET /api/summary` (sobre todo el historial, filtrados por empresa y periodo en la zona `APP_TIMEZONE`). Las listas sin parámetros de página de `/api/tickets` y `/api/appointments` se conservan por compatibilidad y siguen limitadas a 500 registros; la interfaz ya no las usa.

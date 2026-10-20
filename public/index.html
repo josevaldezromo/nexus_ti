@@ -7,7 +7,7 @@
     <meta name="description" content="Nexo TI: portal interno de soporte, incidencias y atención empresarial.">
     <link rel="icon" href="nexo-mark.svg" type="image/svg+xml">
     <title>Nexo TI | Soporte y operaciones</title>
-    <link rel="stylesheet" href="styles.css?v=20261020-server-summary">
+    <link rel="stylesheet" href="styles.css?v=20261020-calendar-settings">
   </head>
   <body>
     <section class="login-screen hidden" id="login-screen" aria-labelledby="login-title">
@@ -42,6 +42,7 @@
           <button class="nav-link" data-view="recursos" aria-label="Guías y soluciones"><span class="nav-icon">↗</span><span class="nav-label">Recursos</span></button>
           <button class="nav-link" data-view="analisis" aria-label="Análisis"><span class="nav-icon">⌁</span><span class="nav-label">Análisis</span></button>
           <button class="nav-link admin-only hidden" data-view="usuarios" aria-label="Usuarios"><span class="nav-icon">♧</span><span class="nav-label">Usuarios</span></button>
+          <button class="nav-link admin-only hidden" data-view="configuracion" aria-label="Configuración"><span class="nav-icon">⚙</span><span class="nav-label">Configuración</span></button>
         </nav>
 
         <div class="sidebar-bottom">
@@ -138,7 +139,7 @@
 
         <section class="view" id="view-agenda">
           <div class="page-heading"><div><div class="eyebrow">ATENCIÓN PLANIFICADA</div><h1>Agenda de soporte</h1><p>Organiza sesiones de atención para Odoo y otras necesidades de TI.</p></div><button class="button button-primary" data-open-appointment>＋ Solicitar cita</button></div>
-          <div class="notice-card"><span class="notice-icon">i</span><p><strong>Las solicitudes se registran de forma centralizada.</strong> El nombre y correo del solicitante se toman de su cuenta. TI puede confirmar o cancelar la solicitud; la hora queda pendiente hasta confirmar disponibilidad. Google Calendar aún no está conectado.</p></div>
+          <div class="notice-card"><span class="notice-icon">i</span><p><strong>Las solicitudes se registran de forma centralizada.</strong> El nombre y correo del solicitante se toman de su cuenta. TI puede confirmar o cancelar la solicitud; la hora queda pendiente hasta confirmar disponibilidad. Si TI activa la sincronización, las citas confirmadas se agregan al calendario compartido.</p></div>
           <section class="panel full-panel"><div class="panel-heading"><div><h2>Solicitudes de atención</h2><p>Ordenadas por fecha y hora</p></div><span class="period-pill" id="agenda-scope">Solicitudes visibles para tu cuenta</span></div><div class="agenda-list" id="agenda-list"></div><div class="empty-state hidden" id="agenda-empty">Todavía no hay citas solicitadas.</div><div class="pagination-controls hidden" id="appointment-pagination"><button class="button button-outline" id="appointment-page-previous" type="button">Anterior</button><span id="appointment-page-label">Página 1 de 1</span><button class="button button-outline" id="appointment-page-next" type="button">Siguiente</button></div></section>
         </section>
 
@@ -164,6 +165,39 @@
           <div class="page-heading"><div><div class="eyebrow">CONTROL DE ACCESO</div><h1>Usuarios</h1><p>Administra quién puede ingresar al portal.</p></div><button class="button button-primary" id="open-user-modal">＋ Crear cuenta</button></div>
           <div class="notice-card"><span class="notice-icon">i</span><p>Administra cuentas, empresas y accesos. Los colaboradores pueden consultar tickets y solicitudes de todas sus empresas asignadas; si cambian su contraseña, se cerrarán sus sesiones activas.</p></div>
           <section class="panel full-panel"><div class="panel-heading"><div><h2>Directorio de acceso</h2><p>Las cuentas desactivadas pierden acceso inmediatamente.</p></div></div><div class="table-wrap"><table><thead><tr><th>NOMBRE</th><th>CORREO</th><th>EMPRESAS</th><th>ROL</th><th>ACCESO</th><th>ACCIÓN</th></tr></thead><tbody id="users-table"></tbody></table></div><div class="empty-state hidden" id="users-empty">Aún no hay usuarios.</div></section>
+        </section>
+        <section class="view" id="view-configuracion">
+          <div class="page-heading"><div><div class="eyebrow">AJUSTES DEL SISTEMA</div><h1>Configuración</h1><p>Conecta el calendario compartido para sincronizar las citas confirmadas.</p></div></div>
+          <div class="notice-card hidden" id="calendar-key-warning"><span class="notice-icon">!</span><p><strong>Falta la llave de cifrado.</strong> Define <code>CONFIG_ENCRYPTION_KEY</code> (mínimo 32 caracteres aleatorios) en las variables de entorno del servicio y reinicia para poder guardar las credenciales.</p></div>
+          <section class="panel full-panel settings-panel">
+            <div class="panel-heading"><div><h2>Google Calendar</h2><p>Las citas confirmadas se crean como eventos y se eliminan si se cancelan o vuelven a pendiente.</p></div><span class="period-pill" id="calendar-status">Cargando…</span></div>
+            <form class="settings-form" id="calendar-form">
+              <div class="login-error hidden" id="calendar-error" role="alert"></div>
+              <label>URI de redirección autorizada<span class="copy-row"><input id="calendar-redirect" readonly><button class="button button-outline" type="button" id="calendar-copy">Copiar</button></span><span class="field-hint">Agrégala en Google Cloud → APIs y servicios → Credenciales → tu cliente OAuth.</span></label>
+              <div class="form-row">
+                <label>Client ID<input name="clientId" maxlength="255" autocomplete="off" spellcheck="false" placeholder="1234567890-abc.apps.googleusercontent.com"></label>
+                <label>Client Secret<input name="clientSecret" type="password" maxlength="256" autocomplete="new-password" spellcheck="false"><span class="field-hint" id="calendar-secret-hint">Se guarda cifrado y no se vuelve a mostrar.</span></label>
+              </div>
+              <div class="form-row">
+                <label>ID del calendario<input name="calendarId" maxlength="255" autocomplete="off" spellcheck="false" value="primary"><span class="field-hint">“primary” usa el calendario principal de la cuenta conectada; para uno compartido pega su ID.</span></label>
+                <label>Duración de cada evento<select name="eventMinutes"><option value="30">30 minutos</option><option value="45">45 minutos</option><option value="60" selected>1 hora</option><option value="90">1 hora 30 min</option><option value="120">2 horas</option></select><span class="field-hint" id="calendar-timezone-hint"></span></label>
+              </div>
+              <label class="check-row"><input name="enabled" type="checkbox"> Sincronizar las citas confirmadas con Google Calendar</label>
+              <div class="settings-actions">
+                <button class="button button-primary" type="submit" id="calendar-save">Guardar configuración</button>
+                <button class="button button-outline" type="button" id="calendar-connect">Conectar con Google</button>
+                <button class="button button-outline" type="button" id="calendar-test">Probar conexión</button>
+                <button class="button button-outline" type="button" id="calendar-sync">Sincronizar pendientes</button>
+                <button class="button button-outline button-danger" type="button" id="calendar-disconnect">Desconectar</button>
+              </div>
+            </form>
+            <ol class="setup-steps">
+              <li>En Google Cloud crea un proyecto, habilita la <strong>API de Google Calendar</strong> y configura la pantalla de consentimiento.</li>
+              <li>Crea unas credenciales <strong>ID de cliente de OAuth</strong> de tipo <em>Aplicación web</em> y agrega la URI de redirección de arriba.</li>
+              <li>Pega el Client ID y el Client Secret, guarda y pulsa <strong>Conectar con Google</strong> con la cuenta dueña del calendario.</li>
+              <li>Prueba la conexión y activa la sincronización. Con <strong>Sincronizar pendientes</strong> se envían las citas confirmadas anteriores.</li>
+            </ol>
+          </section>
         </section>
         <footer class="page-footer"><span class="footer-brand">Nexo TI</span><span class="footer-divider">·</span><span>Conectamos soluciones.</span><span class="footer-credit">Desarrollado por <strong>Raymundo Valdez</strong></span></footer>
       </main>
@@ -264,6 +298,6 @@
     </dialog>
 
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
-    <script src="app.js?v=20261020-server-summary"></script>
+    <script src="app.js?v=20261020-calendar-settings"></script>
   </body>
 </html>
