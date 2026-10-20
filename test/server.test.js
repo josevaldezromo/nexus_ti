@@ -188,12 +188,14 @@ test("authenticated ticket API paginates records and rejects invalid page sizes"
   await once(server, "listening");
   const origin = `http://127.0.0.1:${server.address().port}`;
 
-  const csrfResponse = await fetch(`${origin}/api/auth/csrf`);
+  const proto = { "X-Forwarded-Proto": "https" };
+  const csrfResponse = await fetch(`${origin}/api/auth/csrf`, { headers: proto });
   const initialCookie = csrfResponse.headers.get("set-cookie").split(";")[0];
   const { csrfToken } = await csrfResponse.json();
   const loginResponse = await fetch(`${origin}/api/auth/login`, {
     method: "POST",
     headers: {
+      ...proto,
       Cookie: initialCookie,
       Origin: "http://127.0.0.1",
       "Content-Type": "application/json",
@@ -206,7 +208,7 @@ test("authenticated ticket API paginates records and rejects invalid page sizes"
   const login = await loginResponse.json();
 
   const pageResponse = await fetch(`${origin}/api/tickets?page=2&limit=25`, {
-    headers: { Cookie: sessionCookie },
+    headers: { ...proto, Cookie: sessionCookie },
   });
   assert.equal(pageResponse.status, 200);
   assert.deepEqual(await pageResponse.json(), {
@@ -218,7 +220,7 @@ test("authenticated ticket API paginates records and rejects invalid page sizes"
   });
 
   const appointmentsResponse = await fetch(`${origin}/api/appointments?page=1&limit=1`, {
-    headers: { Cookie: sessionCookie },
+    headers: { ...proto, Cookie: sessionCookie },
   });
   assert.equal(appointmentsResponse.status, 200);
   assert.deepEqual(await appointmentsResponse.json(), {
@@ -230,13 +232,13 @@ test("authenticated ticket API paginates records and rejects invalid page sizes"
   });
 
   const metricsResponse = await fetch(`${origin}/api/tickets/metrics?period=all`, {
-    headers: { Cookie: sessionCookie },
+    headers: { ...proto, Cookie: sessionCookie },
   });
   assert.equal(metricsResponse.status, 200);
   assert.equal((await metricsResponse.json()).metrics.average_response_minutes, 45);
 
   const invalidPage = await fetch(`${origin}/api/tickets?page=1&limit=1000`, {
-    headers: { Cookie: sessionCookie },
+    headers: { ...proto, Cookie: sessionCookie },
   });
   assert.equal(invalidPage.status, 400);
   assert.ok(login.user);
