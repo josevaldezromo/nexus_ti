@@ -480,6 +480,98 @@ function createApp({ pool, sessionSecret, appOrigin, events = new EventEmitter()
     return res.json({ metrics: result.rows[0] });
   }));
 
+  app.get("/api/summary", asyncRoute(async (req, res) => {
+    const company = req.query.company || "";
+    const period = req.query.period || "all";
+    if ((company && !COMPANIES.has(company)) || !["all", "week", "month"].includes(period)) {
+      return res.status(400).json({ error: "Los filtros del resumen no son válidos." });
+    }
+    const timeZone = process.env.APP_TIMEZONE || "UTC";
+    const buildScope = (prefix = "") => {
+      const values = [timeZone];
+      const filters = ["$1::text IS NOT NULL"];
+      if (req.user.role !== "admin") filters.push(`${prefix}company = ANY($${values.push(req.user.companies)}::varchar[])`);
+      if (company) filters.push(`${prefix}company = $${values.push(company)}`);
+      return { values, filters };
+    };
+    const where = (filters) => (filters.length ? `WHERE ${filters.join(" AND ")}` : "");
+    const ticketScope = buildScope();
+    const ticketWhere = where(ticketScope.filters);
+    const periodFilters = [...ticketScope.filters];
+    if (period !== "all") {
+      periodFilters.push(`created_at >= date_trunc('${period}', NOW() AT TIME ZONE $1) AT TIME ZONE $1`);
+    }
+    const periodWhere = where(periodFilters);
+    const appointmentScope = buildScope();
+    const appointmentWhere = where(appointmentScope.filters);
+    const recentScope = buildScope("t.");
+    const pendingFilters = req.user.role === "admin" ? ["$1::text IS NOT NULL"] : appointmentScope.filters;
+
+    const [ticketTotals, periodTickets, byCompany, byCategory, daily, recent, appointmentTotals, upcoming, days] = await Promise.all([
+      pool.query(
+        `SELECT COUNT(*) FILTER (WHERE status NOT IN ('Resuelto', 'Cerrado'))::int AS open,
+          COUNT(*) FILTER (WHERE status = 'En revisión')::int AS in_review,
+          COUNT(*) FILTER (WHERE status IN ('Resuelto', 'Cerrado')
+            AND date_trunc('month', updated_at AT TIME ZONE $1) = date_trunc('month', NOW() AT TIME ZONE $1))::int AS resolved_this_month
+         FROM tickets ${ticketWhere}`,
+        ticketScope.values,
+      ),
+      pool.query(
+        `SELECT COUNT(*)::int AS total,
+          COUNT(*) FILTER (WHERE status NOT IN ('Resuelto', 'Cerrado'))::int AS open
+         FROM tickets ${periodWhere}`,
+        ticketScope.values,
+      ),
+      pool.query(
+        `SELECT company AS name, COUNT(*)::int AS count FROM tickets ${periodWhere}
+         GROUP BY company ORDER BY count DESC, company`,
+        ticketScope.values,
+      ),
+      pool.query(
+        `SELECT category AS name, COUNT(*)::int AS count FROM tickets ${periodWhere}
+         GROUP BY category ORDER BY count DESC, category`,
+        ticketScope.values,
+      ),
+      pool.query(
+        `SELECT to_char((created_at AT TIME ZONE $1)::date, 'YYYY-MM-DD') AS day, company, COUNT(*)::int AS count
+         FROM tickets ${where([...ticketScope.filters, "created_at >= ((NOW() AT TIME ZONE $1)::date - 6) AT TIME ZONE $1"])}
+         GROUP BY 1, 2`,
+        ticketScope.values,
+      ),
+      pool.query(
+        `SELECT t.id, t.subject, t.requester, t.email, t.company, t.category, t.module, t.priority, t.status, t.root_cause,
+          t.description, t.created_at, t.updated_at, t.first_response_at, t.resolved_at, u.name AS assignee
+         FROM tickets t LEFT JOIN users u ON u.id = t.assigned_to
+         ${where(recentScope.filters)}
+         ORDER BY t.created_at DESC, t.id DESC LIMIT 4`,
+        recentScope.values,
+      ),
+      pool.query(
+        `SELECT COUNT(*) FILTER (WHERE status <> 'Cancelada')::int AS active,
+          (SELECT COUNT(*)::int FROM appointments ${where(pendingFilters.concat("status = 'Pendiente'"))}) AS pending
+         FROM appointments ${appointmentWhere}`,
+        appointmentScope.values,
+      ),
+      pool.query(
+        `SELECT id, requester, email, subject, company, topic, appointment_date AS date, appointment_time AS time, notes, status
+         FROM appointments ${where([...appointmentScope.filters, "status <> 'Cancelada'"])}
+         ORDER BY appointment_date, appointment_time, id LIMIT 3`,
+        appointmentScope.values,
+      ),
+      pool.query(
+        `SELECT to_char(day, 'YYYY-MM-DD') AS day
+         FROM generate_series((NOW() AT TIME ZONE $1)::date - 6, (NOW() AT TIME ZONE $1)::date, interval '1 day') AS day`,
+        [timeZone],
+      ),
+    ]);
+    return res.json({
+      tickets: { ...ticketTotals.rows[0], recent: recent.rows },
+      analysis: { ...periodTickets.rows[0], byCompany: byCompany.rows, byCategory: byCategory.rows },
+      chart: { days: days.rows.map((row) => row.day), counts: daily.rows },
+      appointments: { ...appointmentTotals.rows[0], upcoming: upcoming.rows },
+    });
+  }));
+
   app.post("/api/tickets", asyncRoute(async (req, res) => {
     const { subject, category, priority, module, description } = req.body;
     const company = req.body.company;
@@ -777,8 +869,8 @@ function createApp({ pool, sessionSecret, appOrigin, events = new EventEmitter()
       }
       const updated = await client.query(
         `UPDATE tickets
-         SET status = $1, updated_at = NOW(),
-           resolved_at = CASE WHEN $1 IN ('Resuelto', 'Cerrado') THEN COALESCE(resolved_at, NOW()) ELSE NULL END
+         SET status = $1::varchar, updated_at = NOW(),
+           resolved_at = CASE WHEN $1::varchar IN ('Resuelto', 'Cerrado') THEN COALESCE(resolved_at, NOW()) ELSE NULL END
          WHERE id = $2
          RETURNING id, status, updated_at, resolved_at, requester_id, requester, subject`,
         [status, ticketId],

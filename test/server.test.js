@@ -143,6 +143,17 @@ test("authenticated ticket API paginates records and rejects invalid page sizes"
       if (sql.includes("SELECT id, name, email, role, company, companies, active FROM users WHERE id = $1")) {
         return { rows: [admin], rowCount: 1 };
       }
+      if (sql.includes("generate_series")) return { rows: [{ day: "2026-10-19" }, { day: "2026-10-20" }], rowCount: 2 };
+      if (sql.includes("resolved_this_month")) return { rows: [{ open: 3, in_review: 1, resolved_this_month: 2 }], rowCount: 1 };
+      if (sql.includes("AS pending")) return { rows: [{ active: 4, pending: 2 }], rowCount: 1 };
+      if (sql.includes("GROUP BY company")) return { rows: [{ name: "Bormine", count: 5 }], rowCount: 1 };
+      if (sql.includes("GROUP BY category")) return { rows: [{ name: "Odoo", count: 5 }], rowCount: 1 };
+      if (sql.includes("to_char((created_at")) return { rows: [{ day: "2026-10-20", company: "Bormine", count: 5 }], rowCount: 1 };
+      if (sql.includes("LIMIT 4")) return { rows: [{ id: "9", subject: "Reciente" }], rowCount: 1 };
+      if (sql.includes("LIMIT 3")) return { rows: [{ id: "3", subject: "Próxima" }], rowCount: 1 };
+      if (sql.includes("COUNT(*)::int AS total,\n          COUNT(*) FILTER (WHERE status NOT IN")) {
+        return { rows: [{ total: 5, open: 3 }], rowCount: 1 };
+      }
       if (sql.includes("SELECT COUNT(*)::int AS total FROM tickets")) {
         return { rows: [{ total: 30 }], rowCount: 1 };
       }
@@ -241,5 +252,20 @@ test("authenticated ticket API paginates records and rejects invalid page sizes"
     headers: { ...proto, Cookie: sessionCookie },
   });
   assert.equal(invalidPage.status, 400);
+
+  const summaryResponse = await fetch(`${origin}/api/summary?period=week&company=Bormine`, {
+    headers: { ...proto, Cookie: sessionCookie },
+  });
+  assert.equal(summaryResponse.status, 200);
+  assert.deepEqual(await summaryResponse.json(), {
+    tickets: { open: 3, in_review: 1, resolved_this_month: 2, recent: [{ id: "9", subject: "Reciente" }] },
+    analysis: { total: 5, open: 3, byCompany: [{ name: "Bormine", count: 5 }], byCategory: [{ name: "Odoo", count: 5 }] },
+    chart: { days: ["2026-10-19", "2026-10-20"], counts: [{ day: "2026-10-20", company: "Bormine", count: 5 }] },
+    appointments: { active: 4, pending: 2, upcoming: [{ id: "3", subject: "Próxima" }] },
+  });
+  const invalidSummary = await fetch(`${origin}/api/summary?period=year`, {
+    headers: { ...proto, Cookie: sessionCookie },
+  });
+  assert.equal(invalidSummary.status, 400);
   assert.ok(login.user);
 });

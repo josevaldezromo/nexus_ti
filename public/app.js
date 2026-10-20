@@ -8,8 +8,8 @@ const CATEGORIES = ["Odoo", "Accesos", "Equipo", "Red", "Correo", "Otro"];
 let currentUser = null;
 let csrf = "";
 let selectedCompany = "";
-let tickets = [];
-let appointments = [];
+let summary = null;
+let summaryRequestId = 0;
 let ticketPageRows = [];
 let ticketPage = 1;
 let ticketPageCount = 0;
@@ -368,19 +368,13 @@ function showApplication() {
 }
 
 async function loadData() {
-  const [ticketResult, appointmentResult, resourceResult] = await Promise.all([
-    request("/api/tickets"),
-    request("/api/appointments"),
-    request(`/api/resources${currentUser.role === "admin" ? "?includeInactive=true" : ""}`),
-  ]);
-  tickets = ticketResult.tickets;
-  appointments = appointmentResult.appointments;
+  const resourceResult = await request(`/api/resources${currentUser.role === "admin" ? "?includeInactive=true" : ""}`);
   resources = resourceResult.resources;
   if (currentUser.role === "admin") {
     const userResult = await request("/api/users");
     users = userResult.users;
   }
-  await Promise.all([loadTicketPage(), loadAppointmentPage(), loadSlaMetrics()]);
+  await Promise.all([loadSummary(), loadTicketPage(), loadAppointmentPage(), loadSlaMetrics()]);
   render();
 }
 
@@ -429,6 +423,16 @@ async function loadAppointmentPage() {
   renderAppointments();
 }
 
+async function loadSummary() {
+  const requestId = ++summaryRequestId;
+  const params = new URLSearchParams({ period: document.querySelector("#analysis-period").value });
+  if (selectedCompany) params.set("company", selectedCompany);
+  const result = await request(`/api/summary?${params}`);
+  if (requestId !== summaryRequestId) return;
+  summary = result;
+  render();
+}
+
 async function loadSlaMetrics() {
   const params = new URLSearchParams({ period: document.querySelector("#analysis-period").value });
   if (selectedCompany) params.set("company", selectedCompany);
@@ -462,42 +466,24 @@ function ticketRow(ticket, includeCategory = false) {
   </tr>`;
 }
 
-function countBy(items, key) {
-  return items.reduce((counts, item) => {
-    counts[item[key]] = (counts[item[key]] || 0) + 1;
-    return counts;
-  }, {});
-}
-
-function inSelectedCompany(items) {
-  return selectedCompany ? items.filter((item) => item.company === selectedCompany) : items;
-}
-
 function renderMetrics() {
-  const visibleTickets = inSelectedCompany(tickets);
-  const visibleAppointments = inSelectedCompany(appointments);
-  const active = visibleTickets.filter((ticket) => !["Resuelto", "Cerrado"].includes(ticket.status));
-  const month = localDateKey(new Date()).slice(0, 7);
-  const resolved = visibleTickets.filter((ticket) => ["Resuelto", "Cerrado"].includes(ticket.status)
-    && String(ticket.updated_at).slice(0, 7) === month).length;
-  document.querySelector("#metric-open").textContent = active.length;
-  document.querySelector("#metric-progress").textContent = visibleTickets.filter((ticket) => ticket.status === "En revisión").length;
-  document.querySelector("#metric-resolved").textContent = resolved;
-  document.querySelector("#metric-appointments").textContent = visibleAppointments.filter((item) => item.status !== "Cancelada").length;
-  document.querySelector("#nav-ticket-count").textContent = active.length;
-  const appointmentCount = currentUser.role === "admin"
-    ? appointments.filter((item) => item.status === "Pendiente").length
-    : visibleAppointments.filter((item) => item.status !== "Cancelada").length;
+  if (!summary) return;
+  const { tickets: ticketSummary, appointments: appointmentSummary } = summary;
+  document.querySelector("#metric-open").textContent = ticketSummary.open;
+  document.querySelector("#metric-progress").textContent = ticketSummary.in_review;
+  document.querySelector("#metric-resolved").textContent = ticketSummary.resolved_this_month;
+  document.querySelector("#metric-appointments").textContent = appointmentSummary.active;
+  document.querySelector("#nav-ticket-count").textContent = ticketSummary.open;
+  const appointmentCount = currentUser.role === "admin" ? appointmentSummary.pending : appointmentSummary.active;
   const appointmentBadge = document.querySelector("#nav-appointment-count");
   appointmentBadge.textContent = appointmentCount > 99 ? "99+" : String(appointmentCount);
   appointmentBadge.classList.toggle("hidden", appointmentCount === 0);
 }
 
 function renderTickets() {
-  const scopedTickets = inSelectedCompany(tickets);
-  const sorted = [...scopedTickets].sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
-  document.querySelector("#recent-tickets").innerHTML = sorted.slice(0, 4).map((ticket) => ticketRow(ticket)).join("");
-  document.querySelector("#ticket-empty").classList.toggle("hidden", sorted.length > 0);
+  const recent = summary?.tickets.recent || [];
+  document.querySelector("#recent-tickets").innerHTML = recent.map((ticket) => ticketRow(ticket)).join("");
+  document.querySelector("#ticket-empty").classList.toggle("hidden", recent.length > 0);
   renderTicketPage();
   updateTicketAgeLabels();
 }
@@ -522,32 +508,22 @@ async function updateTicketStatus(event) {
       method: "PATCH",
       body: JSON.stringify({ status: select.value }),
     });
-    const ticket = tickets.find((item) => Number(item.id) === Number(result.ticket.id));
-    if (ticket) {
-      ticket.status = result.ticket.status;
-      ticket.updated_at = result.ticket.updated_at;
-      ticket.resolved_at = result.ticket.resolved_at;
-    }
     const paginatedTicket = ticketPageRows.find((item) => Number(item.id) === Number(result.ticket.id));
     if (paginatedTicket) {
       paginatedTicket.status = result.ticket.status;
       paginatedTicket.updated_at = result.ticket.updated_at;
       paginatedTicket.resolved_at = result.ticket.resolved_at;
     }
-    render();
-    await loadTicketPage();
+    await Promise.all([loadSummary(), loadTicketPage(), loadSlaMetrics()]);
     notify("Estado del ticket actualizado.");
   } catch (error) {
     notify(error.message);
-    render();
+    renderTicketPage();
   }
 }
 
 function renderAppointments() {
-  const sorted = [...inSelectedCompany(appointments)]
-    .sort((a, b) => `${String(a.date).slice(0, 10)} ${String(a.time).slice(0, 5)}`.localeCompare(`${String(b.date).slice(0, 10)} ${String(b.time).slice(0, 5)}`));
-  const upcoming = sorted.filter((item) => item.status !== "Cancelada");
-  document.querySelector("#appointment-list").innerHTML = upcoming.slice(0, 3).map((item) => {
+  document.querySelector("#appointment-list").innerHTML = (summary?.appointments.upcoming || []).map((item) => {
     const day = displayDate(item.date, { day: "2-digit" });
     const month = displayDate(item.date, { month: "short" }).replace(".", "");
     return `<div class="appointment-item"><div class="date-tile"><strong>${day}</strong><span>${escapeHtml(month)}</span></div><div class="appointment-copy"><strong>${escapeHtml(item.subject)}</strong><span>${escapeHtml(String(item.time).slice(0, 5))} · ${escapeHtml(item.company)}</span></div></div>`;
@@ -569,54 +545,33 @@ function renderAppointments() {
 }
 
 function renderAnalysis() {
+  if (!summary) return;
   const period = document.querySelector("#analysis-period").value;
-  const now = new Date();
-  const today = localDateKey(now);
-  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  let caption = "Todo el registro visible";
-  if (period === "week") {
-    start.setDate(start.getDate() - ((start.getDay() + 6) % 7));
-    caption = "Desde el lunes de esta semana";
-  } else if (period === "month") {
-    start.setDate(1);
-    caption = "Desde el inicio de este mes";
-  }
-  const startKey = localDateKey(start);
-  const scopedTickets = inSelectedCompany(tickets);
-  const selected = period === "all" ? scopedTickets : scopedTickets.filter((ticket) => {
-    const created = localDateKey(new Date(ticket.created_at));
-    return created >= startKey && created <= today;
-  });
-  const companyCounts = countBy(selected, "company");
-  const categoryCounts = countBy(selected, "category");
-  const topCompany = Object.entries(companyCounts).sort((a, b) => b[1] - a[1])[0];
-  const topCategory = Object.entries(categoryCounts).sort((a, b) => b[1] - a[1])[0];
-  document.querySelector("#analysis-total").textContent = selected.length;
-  document.querySelector("#analysis-open").textContent = selected.filter((ticket) => !["Resuelto", "Cerrado"].includes(ticket.status)).length;
-  document.querySelector("#analysis-company").textContent = topCompany?.[0] || "—";
-  document.querySelector("#analysis-category").textContent = topCategory?.[0] || "—";
+  const caption = { all: "Todo el registro visible", week: "Desde el lunes de esta semana", month: "Desde el inicio de este mes" }[period];
+  const { analysis } = summary;
+  document.querySelector("#analysis-total").textContent = analysis.total;
+  document.querySelector("#analysis-open").textContent = analysis.open;
+  document.querySelector("#analysis-company").textContent = analysis.byCompany[0]?.name || "—";
+  document.querySelector("#analysis-category").textContent = analysis.byCategory[0]?.name || "—";
   document.querySelector("#analysis-period-caption").textContent = caption;
-  const categories = Object.entries(categoryCounts).sort((a, b) => b[1] - a[1]);
-  const max = Math.max(1, ...categories.map(([, count]) => count));
-  document.querySelector("#category-breakdown").innerHTML = categories.map(([name, count]) => (
+  const max = Math.max(1, ...analysis.byCategory.map(({ count }) => count));
+  document.querySelector("#category-breakdown").innerHTML = analysis.byCategory.map(({ name, count }) => (
     `<div class="category-row"><span class="category-name">${escapeHtml(name)}</span><div class="category-track"><div class="category-fill" style="width:${Math.round((count / max) * 100)}%"></div></div><span class="category-count">${count}</span></div>`
   )).join("");
-  document.querySelector("#analysis-empty").classList.toggle("hidden", categories.length > 0);
+  document.querySelector("#analysis-empty").classList.toggle("hidden", analysis.byCategory.length > 0);
 }
 
 function renderChart() {
-  const days = Array.from({ length: 7 }, (_, index) => {
-    const date = new Date();
-    date.setDate(date.getDate() - (6 - index));
-    return localDateKey(date);
-  });
+  if (!summary) return;
   const colors = ["bar-bormine", "bar-didiamant", "bar-corpdiam"];
-  document.querySelector("#chart-bars").innerHTML = days.map((day) => {
-    const values = COMPANIES.map((company) => selectedCompany && company !== selectedCompany
-      ? 0
-      : tickets.filter((ticket) => localDateKey(new Date(ticket.created_at)) === day && ticket.company === company).length);
-    const colorsByCompany = Object.fromEntries(COMPANIES.map((company, index) => [company, colors[index]]));
-    const bars = values.map((count, index) => `<i class="bar ${colorsByCompany[COMPANIES[index]]}" style="height:${Math.max(count ? 4 : 0, (count / 12) * 100)}%"></i>`).join("");
+  const colorsByCompany = Object.fromEntries(COMPANIES.map((company, index) => [company, colors[index]]));
+  document.querySelector("#chart-bars").innerHTML = summary.chart.days.map((day) => {
+    const bars = COMPANIES.map((company) => {
+      const count = selectedCompany && company !== selectedCompany
+        ? 0
+        : summary.chart.counts.find((row) => row.day === day && row.company === company)?.count || 0;
+      return `<i class="bar ${colorsByCompany[company]}" style="height:${Math.max(count ? 4 : 0, (count / 12) * 100)}%"></i>`;
+    }).join("");
     const label = new Intl.DateTimeFormat("es-MX", { weekday: "short" }).format(new Date(`${day}T12:00:00`)).replace(".", "");
     return `<div class="bar-group">${bars}<span class="bar-day">${escapeHtml(label)}</span></div>`;
   }).join("");
@@ -823,8 +778,7 @@ document.querySelector("#logout-button").addEventListener("click", async () => {
     liveSource?.close();
     liveSource = null;
     currentUser = null;
-    tickets = [];
-    appointments = [];
+    summary = null;
     notifications = [];
     unreadNotificationCount = 0;
     knownNotificationIds.clear();
@@ -899,6 +853,7 @@ document.querySelector("#company-filter").addEventListener("change", () => {
 });
 document.querySelector("#company-scope").addEventListener("change", (event) => {
   selectedCompany = event.currentTarget.value;
+  summary = null;
   ticketPageRows = [];
   ticketTotal = 0;
   ticketPageCount = 0;
@@ -911,6 +866,7 @@ document.querySelector("#company-scope").addEventListener("change", (event) => {
   render();
   ticketPage = 1;
   appointmentPage = 1;
+  loadSummary().catch((error) => notify(error.message));
   loadTicketPage().catch((error) => notify(error.message));
   loadAppointmentPage().catch((error) => notify(error.message));
   loadSlaMetrics().catch((error) => notify(error.message));
@@ -940,7 +896,7 @@ document.querySelector("#appointment-page-next").addEventListener("click", () =>
   loadAppointmentPage().catch((error) => notify(error.message));
 });
 document.querySelector("#analysis-period").addEventListener("change", () => {
-  renderAnalysis();
+  loadSummary().catch((error) => notify(error.message));
   loadSlaMetrics().catch((error) => notify(error.message));
 });
 window.setInterval(updateTicketAgeLabels, 60000);
@@ -1033,12 +989,10 @@ document.querySelector("#ticket-form").addEventListener("submit", async (event) 
         description: form.get("description"),
       }),
     });
-    tickets.unshift(result.ticket);
     ticketPage = 1;
     formElement.reset();
     closeDialog(document.querySelector("#ticket-modal"));
-    render();
-    await loadTicketPage();
+    await Promise.all([loadSummary(), loadTicketPage(), loadSlaMetrics()]);
     setView("tickets");
     notify(`Ticket ${ticketCode(result.ticket.id)} creado.`);
   } catch (error) {
@@ -1059,16 +1013,13 @@ document.querySelector("#agenda-list").addEventListener("change", async (event) 
       method: "PATCH",
       body: JSON.stringify({ status: select.value }),
     });
-    const appointment = appointments.find((item) => Number(item.id) === Number(result.appointment.id));
-    if (appointment) appointment.status = result.appointment.status;
     const pageAppointment = appointmentPageRows.find((item) => Number(item.id) === Number(result.appointment.id));
     if (pageAppointment) pageAppointment.status = result.appointment.status;
-    render();
-    await loadAppointmentPage();
+    await Promise.all([loadSummary(), loadAppointmentPage()]);
     notify("Estado de la solicitud actualizado.");
   } catch (error) {
     notify(error.message);
-    render();
+    renderAppointments();
   }
 });
 
@@ -1088,12 +1039,10 @@ document.querySelector("#appointment-form").addEventListener("submit", async (ev
         notes: form.get("notes"),
       }),
     });
-    appointments.push(result.appointment);
     appointmentPage = 1;
     formElement.reset();
     closeDialog(document.querySelector("#appointment-modal"));
-    render();
-    await loadAppointmentPage();
+    await Promise.all([loadSummary(), loadAppointmentPage()]);
     setView("agenda");
     notify("Solicitud registrada. La hora aún está pendiente de confirmación.");
   } catch (error) {
